@@ -1,0 +1,61 @@
+version: '3.8'
+
+services:
+  postgres:
+    image: postgres:15-alpine
+    container_name: postgres-db
+    restart: always
+    environment:
+      POSTGRES_DB: pdd_db
+      POSTGRES_USER: pdd_user
+      POSTGRES_PASSWORD: pdd_password
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+
+volumes:
+  pgdata:
+
+
+
+
+
+  Line-by-Line Explanation & Definitions
+1. File Specification Version
+version: '3.8': Specifies the Docker Compose file format version. Version 3.8 provides full compatibility with modern Docker engines while supporting health checks, volumes, and custom network options.
+
+2. Service Definition
+services:: Top-level key that defines all individual container workloads running in this Docker Compose stack.
+
+postgres:: The internal service name recognized inside the Docker network.
+
+3. Container Configuration Parameters
+image: postgres:15-alpine: Tells Docker to pull the lightweight Alpine Linux version of PostgreSQL version 15. The Alpine base image minimizes storage usage and security vulnerabilities.
+
+container_name: postgres-db: Assigns a fixed, human-readable name to the container (postgres-db) instead of letting Docker generate a random name.
+
+restart: always: Ensures the PostgreSQL database automatically restarts if it crashes or when servera reboots.
+
+4. Database Environment Variables
+environment:: Passes runtime parameters directly to the PostgreSQL engine during startup initialization:
+
+POSTGRES_DB: pdd_db: Creates the default application database named pdd_db.
+
+POSTGRES_USER: pdd_user: Creates the primary superuser account pdd_user.
+
+POSTGRES_PASSWORD: pdd_password: Sets the secure password for pdd_user.
+
+5. Networking & Port Mapping
+ports:: Exposes container network interfaces to the host:
+
+"5432:5432": Maps host machine port 5432 to internal container port 5432, allowing external database tools or local backend applications on servera to connect to PostgreSQL.
+
+6. Volume Storage & Data Persistence
+volumes: (Service level):
+
+- pgdata:/var/lib/postgresql/data: Mounts a Docker managed volume named pgdata into /var/lib/postgresql/data (where Postgres stores all database tables and indexes). This guarantees data persistence even if the database container is destroyed or upgraded.
+
+volumes: (Top-level):
+
+pgdata:: Registers pgdata as a named, persistent storage volume managed globally by Docker on servera.
