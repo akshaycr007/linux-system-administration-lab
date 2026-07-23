@@ -1,0 +1,627 @@
+---
+- name: Fast System Configuration, Services, SSL & Automation
+  hosts: web_servers
+  become: yes
+
+  vars:
+    domain_name: "pddtestapp.luluone.com"
+    ssl_dir: "/etc/ssl/pddtestapp"
+    ssh_allowed_subnet: "192.168.50.0/24"
+
+  tasks:
+    # -------------------------------------------------------------
+    # 1. Package Management
+    # -------------------------------------------------------------
+    - name: Install required dependencies directly
+      apt:
+        name:
+          - ufw
+          - docker.io
+          - docker-compose-v2
+          - nginx
+          - openssl
+        state: present
+        update_cache: yes
+
+    # -------------------------------------------------------------
+    # 2. Firewall Configuration (UFW)
+    # -------------------------------------------------------------
+    - name: Set UFW default policies
+      ufw:
+        direction: "{{ item.direction }}"
+        policy: "{{ item.policy }}"
+      loop:
+        - { direction: 'incoming', policy: 'deny' }
+        - { direction: 'outgoing', policy: 'allow' }
+
+    - name: Allow HTTP and HTTPS in UFW
+      ufw:
+        rule: allow
+        port: "{{ item }}"
+        proto: tcp
+      loop: ['80', '443']
+
+    - name: Allow SSH only from specific subnet
+      ufw:
+        rule: allow
+        proto: tcp
+        port: '22'
+        src: "{{ ssh_allowed_subnet }}"
+
+    - name: Enable UFW firewall
+      ufw:
+        state: enabled
+
+    # -------------------------------------------------------------
+    # 3. User & Directory Management
+    # -------------------------------------------------------------
+    - name: Create appuser with home /app/appuser
+      user:
+        name: appuser
+        password: "{{ 'appuser' | password_hash('sha512') }}"
+        home: /app/appuser
+        shell: /bin/bash
+        groups: sudo,docker
+        append: yes
+        state: present
+
+    - name: Create persistent data directory
+      file:
+        path: /app/appuser/data
+        state: directory
+        owner: appuser
+        group: appuser
+        mode: '0755'
+
+    - name: Create index.html with Welcome message
+      copy:
+        dest: /app/appuser/data/index.html
+        content: "Welcome to PDD\n"
+        owner: appuser
+        group: appuser
+        mode: '0644'
+
+    # -------------------------------------------------------------
+    # 4. Container Deployments
+    # -------------------------------------------------------------
+    - name: Run Nginx container (my-app1) on port 8082
+      community.docker.docker_container:
+        name: my-app1
+        image: nginx:alpine
+        state: started
+        restart_policy: always
+        published_ports:
+          - "8082:80"
+        volumes:
+          - /app/appuser/data:/usr/share/nginx/html:ro
+
+    - name: Prepare Postgres Compose folder
+      file:
+        path: /app/appuser/postgres-db
+        state: directory
+        owner: appuser
+        group: appuser
+        mode: '0755'
+
+    - name: Create docker-compose.yml for Postgres
+      copy:
+        dest: /app/appuser/postgres-db/docker-compose.yml
+        owner: appuser
+        group: appuser
+        mode: '0644'
+        content: |
+          version: '3.8'
+          services:
+            postgres:
+              image: postgres:15-alpine
+              container_name: postgres-db
+              restart: always
+              environment:
+                POSTGRES_DB: pdd_db
+                POSTGRES_USER: pdd_user
+                POSTGRES_PASSWORD: pdd_password
+              ports:
+                - "5432:5432"
+              volumes:
+                - pgdata:/var/lib/postgresql/data
+          volumes:
+            pgdata:
+
+    - name: Launch Postgres container using Compose
+      command: docker compose up -d
+      args:
+        chdir: /app/appuser/postgres-db
+
+    # -------------------------------------------------------------
+    # 5. Reverse Proxy & SSL Setup
+    # -------------------------------------------------------------
+    - name: Create SSL folder
+      file:
+        path: "{{ ssl_dir }}"
+        state: directory
+        mode: '0700'
+
+    - name: Generate self-signed SSL cert
+      command: >
+        openssl req -x509 -nodes -days 365 -newkey rsa:2048
+        -keyout {{ ssl_dir }}/pddtestapp.key
+        -out {{ ssl_dir }}/pddtestapp.crt
+        -subj "/C=IN/ST=State/L=City/O=PDD/CN={{ domain_name }}"
+      args:
+        creates: "{{ ssl_dir }}/pddtestapp.crt"
+
+    - name: Configure Nginx Reverse Proxy
+      copy:
+        dest: /etc/nginx/sites-available/pddtestapp.conf
+        content: |
+          server {
+              listen 80;
+              server_name {{ domain_name }};
+              return 301 https://$host$request_uri;
+          }
+
+          server {
+              listen 443 ssl;
+              server_name {{ domain_name }};
+
+              ssl_certificate {{ ssl_dir }}/pddtestapp.crt;
+              ssl_certificate_key {{ ssl_dir }}/pddtestapp.key;
+
+              ssl_protocols TLSv1.2 TLSv1.3;
+              ssl_ciphers HIGH:!aNULL:!MD5;
+
+              location / {
+                  proxy_pass http://127.0.0.1:8082;
+                  proxy_set_header Host $host;
+                  proxy_set_header X-Real-IP $remote_addr;
+                  proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+                  proxy_set_header X-Forwarded-Proto $scheme;
+              }
+          }
+
+    - name: Enable Nginx site
+      file:
+        src: /etc/nginx/sites-available/pddtestapp.conf
+        dest: /etc/nginx/sites-enabled/pddtestapp.conf
+        state: link
+
+    - name: Remove default Nginx site
+      file:
+        path: /etc/nginx/sites-enabled/default
+        state: absent
+
+    - name: Restart Nginx
+      service:
+        name: nginx
+        state: restarted
+        enabled: yes
+
+    # -------------------------------------------------------------
+    # 6. Maintenance & Daily 2 AM Cron Job
+    # -------------------------------------------------------------
+    - name: Create backup directory
+      file:
+        path: /backup
+        state: directory
+        mode: '0755'
+
+    - name: Write daily maintenance script
+      copy:
+        dest: /usr/local/bin/daily_maintenance.sh
+        mode: '0755'
+        content: |
+          #!/bin/bash
+          # Delete files larger than 500MB under /app/appuser/data
+          find /app/appuser/data -type f -size +500M -exec rm -f {} +
+
+          # Backup /var/log to /backup with date timestamp
+          TIMESTAMP=$(date +%Y-%m-%d_%H%M%S)
+          tar -czf /backup/var_log_backup_${TIMESTAMP}.tar.gz /var/log 2>/dev/null
+
+    - name: Set 2 AM cron job
+      cron:
+        name: "Daily log backup and disk cleanup"
+        minute: "0"
+        hour: "2"
+        job: "/usr/local/bin/daily_maintenance.sh"+
+
+
+
+
+
+
+
+
+Playbook Header & Centralized Variables
+YAML
+---
+- name: Fast System Configuration, Services, SSL & Automation
+  hosts: web_servers
+  become: yes
+
+  vars:
+    domain_name: "pddtestapp.luluone.com"
+    ssl_dir: "/etc/ssl/pddtestapp"
+    ssh_allowed_subnet: "192.168.50.0/24"
+
+Definitions:
+---: Tells the system this is a valid YAML document.
+
+name: A human-readable label describing the overall goal of the playbook.
+
+hosts: web_servers: Specifies which server group in your hosts inventory file (e.g., servera) will execute these commands.
+
+become: yes: Tells Ansible to elevate privileges to root (sudo) when executing every task, which is necessary for installing packages, editing firewall rules, and managing system services.
+
+vars: Declares custom variables used throughout the playbook:
+
+domain_name: The exact domain used in Nginx proxying and SSL generation.
+
+ssl_dir: The directory path where SSL certificates will be stored.
+
+ssh_allowed_subnet: The allowed IP subnet for SSH remote connections.
+
+⚙️ Step 1: Package Management & System Dependencies
+YAML
+    - name: Install required dependencies directly
+      apt:
+        name:
+          - ufw
+          - docker.io
+          - docker-compose-v2
+          - nginx
+          - openssl
+        state: present
+        update_cache: yes
+
+
+Definitions:
+apt: The Ansible module used to manage software packages on Debian/Ubuntu systems.
+
+name: The list of software packages to install:
+
+ufw: Uncomplicated Firewall daemon.
+
+docker.io: Docker engine container platform.
+
+docker-compose-v2: Modern Docker Compose CLI tool.
+
+nginx: High-performance web server used here as a reverse proxy.
+
+openssl: Cryptographic toolkit used for generating SSL/TLS certificates.
+
+state: present: Ensures these packages are installed on the target machine (if already installed, Ansible skips them).
+
+update_cache: yes: Runs the equivalent of apt update before attempting installation so package indexes are fresh.
+
+🛡️ Step 2: Uncomplicated Firewall (UFW) Configuration
+YAML
+    - name: Set UFW default policies
+      ufw:
+        direction: "{{ item.direction }}"
+        policy: "{{ item.policy }}"
+      loop:
+        - { direction: 'incoming', policy: 'deny' }
+        - { direction: 'outgoing', policy: 'allow' }
+
+Definitions:
+ufw: The Ansible module for configuring host firewall rules.
+
+direction / policy: Sets security baselines.
+
+loop: Iterates through two configurations:
+
+incoming / deny: Blocks all unrequested incoming network traffic by default.
+
+outgoing / allow: Allows the server to make outward connections to download updates/packages.
+
+YAML
+    - name: Allow HTTP and HTTPS in UFW
+      ufw:
+        rule: allow
+        port: "{{ item }}"
+        proto: tcp
+      loop: ['80', '443']
+
+Definitions:
+rule: allow: Creates an explicit exception in the incoming firewall policy.
+
+port & proto: Opens TCP port 80 (unencrypted HTTP) and TCP port 443 (encrypted HTTPS) globally so web clients can reach the Nginx proxy.
+
+YAML
+    - name: Allow SSH only from specific subnet
+      ufw:
+        rule: allow
+        proto: tcp
+        port: '22'
+        src: "{{ ssh_allowed_subnet }}"
+
+    - name: Enable UFW firewall
+      ufw:
+        state: enabled
+
+Definitions:
+src: "{{ ssh_allowed_subnet }}": Restricts incoming SSH connections on port 22 exclusively to IP addresses coming from 192.168.50.0/24. Anyone outside this IP range is blocked.
+
+state: enabled: Activates the firewall on boot and turns on active packet filtering.
+
+👤 Step 3: User Provisioning & Directory Structure
+YAML
+    - name: Create appuser with home /app/appuser
+      user:
+        name: appuser
+        password: "{{ 'appuser' | password_hash('sha512') }}"
+        home: /app/appuser
+        shell: /bin/bash
+        groups: sudo,docker
+        append: yes
+        state: present
+
+
+Definitions:
+user: The Ansible module for managing Linux accounts.
+
+name: appuser: Creates a user account named appuser.
+
+password: Encrypts the raw password "appuser" using SHA-512 hashing, which Linux /etc/shadow requires.
+
+home: /app/appuser: Overrides default /home/appuser and sets a custom home path.
+
+groups: sudo,docker: Adds appuser to sudo (admin rights) and docker (permission to run Docker commands without sudo).
+
+append: yes: Keeps any existing groups assigned to the user instead of overwriting them.
+
+YAML
+    - name: Create persistent data directory
+      file:
+        path: /app/appuser/data
+        state: directory
+        owner: appuser
+        group: appuser
+        mode: '0755'
+
+    - name: Create index.html with Welcome message
+      copy:
+        dest: /app/appuser/data/index.html
+        content: "Welcome to PDD\n"
+        owner: appuser
+        group: appuser
+        mode: '0644'
+
+Definitions:
+file: Manages directories, symlinks, and permissions.
+
+path: /app/appuser/data: Creates the directory structure for persistent volume storage.
+
+owner / group: Sets ownership to appuser.
+
+mode: '0755': Gives owner full read/write/execute rights, and others read/execute rights.
+
+copy: Writes static text directly to a destination path.
+
+content: "Welcome to PDD\n": Generates the HTML file that will be rendered by the containerized web application.
+
+🐳 Step 4: Container Application Deployments
+YAML
+    - name: Run Nginx container (my-app1) on port 8082
+      community.docker.docker_container:
+        name: my-app1
+        image: nginx:alpine
+        state: started
+        restart_policy: always
+        published_ports:
+          - "8082:80"
+        volumes:
+          - /app/appuser/data:/usr/share/nginx/html:ro
+
+Definitions:
+community.docker.docker_container: Ansible module that directly interfaces with the Docker engine.
+
+name: my-app1: Names the active container instance.
+
+image: nginx:alpine: Pulls the lightweight Alpine Linux version of Nginx.
+
+restart_policy: always: Configures Docker to restart this container automatically if it crashes or if the host reboots.
+
+published_ports: "8082:80": Maps host port 8082 to container port 80.
+
+volumes: /app/appuser/data:/usr/share/nginx/html:ro: Binds the host folder /app/appuser/data to the web root inside the container in Read-Only (ro) mode. This guarantees data persistence on the host machine.
+
+YAML
+    - name: Prepare Postgres Compose folder
+      file:
+        path: /app/appuser/postgres-db
+        state: directory
+        owner: appuser
+        group: appuser
+        mode: '0755'
+
+    - name: Create docker-compose.yml for Postgres
+      copy:
+        dest: /app/appuser/postgres-db/docker-compose.yml
+        owner: appuser
+        group: appuser
+        mode: '0644'
+        content: |
+          version: '3.8'
+          services:
+            postgres:
+              image: postgres:15-alpine
+              container_name: postgres-db
+              restart: always
+              environment:
+                POSTGRES_DB: pdd_db
+                POSTGRES_USER: pdd_user
+                POSTGRES_PASSWORD: pdd_password
+              ports:
+                - "5432:5432"
+              volumes:
+                - pgdata:/var/lib/postgresql/data
+          volumes:
+            pgdata:
+
+    - name: Launch Postgres container using Compose
+      command: docker compose up -d
+      args:
+        chdir: /app/appuser/postgres-db
+
+Definitions:
+docker-compose.yml: Defines a multi-container specification for PostgreSQL 15, exposing port 5432 and mapping data to a named Docker volume (pgdata).
+
+command: docker compose up -d: Executes Docker Compose in detached mode (-d), starting the database service in the background within directory /app/appuser/postgres-db.
+
+🔒 Step 5: Reverse Proxy & SSL Certificate Setup
+YAML
+    - name: Create SSL folder
+      file:
+        path: "{{ ssl_dir }}"
+        state: directory
+        mode: '0700'
+
+    - name: Generate self-signed SSL cert
+      command: >
+        openssl req -x509 -nodes -days 365 -newkey rsa:2048
+        -keyout {{ ssl_dir }}/pddtestapp.key
+        -out {{ ssl_dir }}/pddtestapp.crt
+        -subj "/C=IN/ST=State/L=City/O=PDD/CN={{ domain_name }}"
+      args:
+        creates: "{{ ssl_dir }}/pddtestapp.crt"
+
+Definitions:
+mode: '0700': Restricts access so only root can read the private cryptographic key folder.
+
+openssl req -x509: Generates a self-signed X.509 certificate.
+
+-nodes: Skips encrypting the private key with a passphrase so Nginx can restart automatically without human intervention.
+
+-days 365: Sets certificate validity for 1 year.
+
+-newkey rsa:2048: Generates a 2048-bit RSA key pair.
+
+-subj: Specifies identity credentials matching the target domain pddtestapp.luluone.com.
+
+args: creates: Prevents re-running the command if the cert file already exists.
+
+YAML
+    - name: Configure Nginx Reverse Proxy
+      copy:
+        dest: /etc/nginx/sites-available/pddtestapp.conf
+        content: |
+          server {
+              listen 80;
+              server_name {{ domain_name }};
+              return 301 https://$host$request_uri;
+          }
+
+          server {
+              listen 443 ssl;
+              server_name {{ domain_name }};
+
+              ssl_certificate {{ ssl_dir }}/pddtestapp.crt;
+              ssl_certificate_key {{ ssl_dir }}/pddtestapp.key;
+
+              ssl_protocols TLSv1.2 TLSv1.3;
+              ssl_ciphers HIGH:!aNULL:!MD5;
+
+              location / {
+                  proxy_pass http://127.0.0.1:8082;
+                  proxy_set_header Host $host;
+                  proxy_set_header X-Real-IP $remote_addr;
+                  proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+                  proxy_set_header X-Forwarded-Proto $scheme;
+              }
+          }
+
+Definitions:
+Port 80 Block: Intercepts unencrypted HTTP traffic and issues a 301 Moved Permanently redirect to HTTPS (https://$host$request_uri).
+
+Port 443 Block: Handles encrypted HTTPS traffic using the generated SSL certificate and private key.
+
+proxy_pass [http://127.0.0.1:8082](http://127.0.0.1:8082): Acts as a reverse proxy by forwarding client browser requests from standard HTTPS port 443 directly to the my-app1 Docker container on local port 8082.
+
+proxy_set_header: Passes original user IP headers and protocols to the backend container.
+
+YAML
+    - name: Enable Nginx site
+      file:
+        src: /etc/nginx/sites-available/pddtestapp.conf
+        dest: /etc/nginx/sites-enabled/pddtestapp.conf
+        state: link
+
+    - name: Remove default Nginx site
+      file:
+        path: /etc/nginx/sites-enabled/default
+        state: absent
+
+    - name: Restart Nginx
+      service:
+        name: nginx
+        state: restarted
+        enabled: yes
+
+Definitions:
+state: link: Creates a symbolic link in /etc/nginx/sites-enabled/ to activate our custom site configuration.
+
+state: absent: Removes Nginx's default fallback site configuration so it won't conflict with ours.
+
+service: Restarts the Nginx system daemon and enables it to boot automatically on server power-up.
+
+🧹 Step 6: Automated Maintenance & Daily Cron Job
+YAML
+    - name: Create backup directory
+      file:
+        path: /backup
+        state: directory
+        mode: '0755'
+
+    - name: Write daily maintenance script
+      copy:
+        dest: /usr/local/bin/daily_maintenance.sh
+        mode: '0755'
+        content: |
+          #!/bin/bash
+          # Delete files larger than 500MB under /app/appuser/data
+          find /app/appuser/data -type f -size +500M -exec rm -f {} +
+
+          # Backup /var/log to /backup with date timestamp
+          TIMESTAMP=$(date +%Y-%m-%d_%H%M%S)
+          tar -czf /backup/var_log_backup_${TIMESTAMP}.tar.gz /var/log 2>/dev/null
+
+Definitions:
+/usr/local/bin/daily_maintenance.sh: A shell script combining two tasks:
+
+find ... -size +500M -exec rm -f {} +: Scans /app/appuser/data and forcibly deletes any file larger than 500MB to save disk space.
+
+tar -czf /backup/var_log_backup_...tar.gz /var/log: Compresses the system log directory /var/log into a gzip-compressed archive saved in /backup labeled with a timestamp.
+
+YAML
+    - name: Set 2 AM cron job
+      cron:
+        name: "Daily log backup and disk cleanup"
+        minute: "0"
+        hour: "2"
+        job: "/usr/local/bin/daily_maintenance.sh"
+
+Definitions:
+cron: The Ansible module that manages Linux crontabs (crontab -e).
+
+minute: "0", hour: "2": Schedules execution every single day at 2:00 AM (0 2 * * *).
+
+job: Calls /usr/local/bin/daily_maintenance.sh to run automatically without manual input.
+
+
+        
+
+
+
+
+
+
+
+
+
+
+
+
+
+        
