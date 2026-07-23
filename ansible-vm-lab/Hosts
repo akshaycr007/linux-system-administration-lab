@@ -1,0 +1,13 @@
+[web_servers]
+servera    ansible_host=192.168.50.182 ansible_user=akshay
+serverb    ansible_host=192.168.50.55  ansible_user=akshay
+workernode ansible_host=192.168.50.122 ansible_user=akshay
+
+
+[web_servers] ➡️ Host Group Header: Groups multiple remote servers under a single named category. When you run a playbook, you target web_servers instead of individual IP addresses.
+
+servera / serverb ➡️ Inventory Hostnames: Friendly nicknames assigned to each target node for logging and reference inside playbooks.
+
+ansible_host=192.168.50.XXX ➡️ Connection Variable: Tells Ansible the exact IP address to connect to via SSH.
+
+ansible_user=akshay ➡️ SSH User Variable: Instructs Ansible to log into the remote machine using the akshay Linux user account.
