@@ -33,3 +33,60 @@
     - name: Print Docker status
       debug:
         msg: "Docker status on {{ inventory_hostname }} is: {{ docker_status.stdout }}"
+
+
+
+
+
+
+
+
+
+Header Section:
+--- ➡️ YAML Document Start Indicator: Standard syntax denoting the beginning of a YAML file.
+
+name: Fast Docker Install and Status Check ➡️ Descriptive title shown in terminal output when execution starts.
+
+hosts: web_servers ➡️ Targets all hosts defined inside the [web_servers] group in the hosts file.
+
+become: yes ➡️ Enables privilege escalation (runs commands as root via sudo).
+
+Task 1: Create System User
+user: ➡️ Ansible core module for managing Linux system users.
+
+name: appuser ➡️ The exact username to create.
+
+shell: /bin/bash ➡️ Assigns standard Bash shell access upon login.
+
+groups: sudo,docker ➡️ Grants administrative capabilities (sudo) and container control (docker).
+
+append: yes ➡️ Prevents overwriting any existing secondary groups the user might already belong to.
+
+state: present ➡️ Ensures the account exists (if already present, Ansible leaves it intact).
+
+Task 2: Create Storage Directory
+file: ➡️ Ansible core module for filesystem management (files, folders, symlinks).
+
+path: /home/appuser/app_data ➡️ Absolute path of the target directory.
+
+state: directory ➡️ Explicitly instructs Ansible to create a folder rather than a plain file.
+
+owner: appuser & group: appuser ➡️ Sets file ownership permissions to appuser.
+
+mode: '0755' ➡️ Unix octal permission (rwxr-xr-x): Owner has full read/write/execute rights; group and others can read/execute.
+
+Task 3: Install Package
+apt: ➡️ Package management module for Debian/Ubuntu systems.
+
+name: docker.io ➡️ Specifies the official Ubuntu repository package for Docker.
+
+state: present ➡️ Checks if installed; if missing, fetches and installs it.
+
+Task 4 & 5: Service Status Verification
+command: systemctl is-active docker ➡️ Executes direct shell command to query Systemd service status.
+
+register: docker_status ➡️ Captures the execution output of the command and saves it into a variable named docker_status.
+
+changed_when: false ➡️ Prevents Ansible from marking this read-only check task as a "changed" state in the execution recap.
+
+debug: ➡️ Ansible module used to print custom text messages to the console screen during playbook execution.
