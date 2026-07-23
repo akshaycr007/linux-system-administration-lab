@@ -1,0 +1,35 @@
+---
+- name: Fast Docker Install and Status Check
+  hosts: web_servers
+  become: yes
+
+  tasks:
+    - name: Create appuser
+      user:
+        name: appuser
+        shell: /bin/bash
+        groups: sudo,docker
+        append: yes
+        state: present
+
+    - name: Create app directory
+      file:
+        path: /home/appuser/app_data
+        state: directory
+        owner: appuser
+        group: appuser
+        mode: '0755'
+
+    - name: Install Docker
+      apt:
+        name: docker.io
+        state: present
+
+    - name: Check if Docker service is active and running
+      command: systemctl is-active docker
+      register: docker_status
+      changed_when: false
+
+    - name: Print Docker status
+      debug:
+        msg: "Docker status on {{ inventory_hostname }} is: {{ docker_status.stdout }}"
