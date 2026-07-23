@@ -1,0 +1,216 @@
+1. Test SSH Connection to Nodes
+Run SSH commands from your workstation to verify connectivity:
+
+Bash
+ssh akshay@192.168.50.182
+ssh akshay@192.168.50.55
+ssh akshay@192.168.50.122
+2. Verify Inventory Configuration (hosts)
+The inventory file groups target servers and maps them to Ansible variable definitions:
+
+Ini, TOML
+[web_servers]
+servera    ansible_host=192.168.50.182 ansible_user=akshay
+serverb    ansible_host=192.168.50.55  ansible_user=akshay
+workernode ansible_host=192.168.50.122 ansible_user=akshay
+[web_servers]: Host group name targeted in playbooks.
+
+servera/b/workernode: Human-readable server aliases.
+
+ansible_host: Target IP address.
+
+ansible_user: Remote SSH login user.
+
+3. Verify Configuration Settings (ansible.cfg)
+Ini, TOML
+[defaults]
+inventory = ./hosts
+host_key_checking = False
+inventory = ./hosts: Automatically loads your inventory without needing -i hosts on every command.
+
+host_key_checking = False: Disables SSH fingerprint verification prompts for automated connections.
+
+⚙️ Step 2: Playbook Breakdown (setup_lab.yml)
+The setup_lab.yml playbook automates the deployment lifecycle through the following sequence:
+
+YAML
+---
+- name: Install Docker and Setup User
+  hosts: web_servers
+  become: yes
+
+  tasks:
+    - name: Create appuser
+      user:
+        name: appuser
+        shell: /bin/bash
+        groups: sudo
+        append: yes
+        state: present
+
+    - name: Create app directory
+      file:
+        path: /home/appuser/app_data
+        state: directory
+        owner: appuser
+        group: appuser
+        mode: '0755'
+
+    - name: Install Docker
+      apt:
+        name: docker.io
+        state: present
+        update_cache: yes
+
+    - name: Add appuser to docker group
+      user:
+        name: appuser
+        groups: docker
+        append: yes
+
+    - name: Ensure Docker service is running
+      service:
+        name: docker
+        state: started
+        enabled: yes
+Explanation of Playbook Tasks:
+hosts: web_servers: Targets all nodes defined in the inventory group.
+
+become: yes: Escalates privileges using sudo to perform root-level system changes.
+
+Task 1: Create appuser: Provisions a standard Linux user with /bin/bash shell and sudo access.
+
+Task 2: Create App Directory: Creates /home/appuser/app_data with 0755 permissions assigned to appuser:appuser.
+
+Task 3: Install Docker: Refreshes package lists (update_cache: yes) to prevent checksum/APT hash-sum errors and installs docker.io.
+
+Task 4: Add appuser to Docker Group: Grants non-root execution privileges for Docker commands.
+
+Task 5: Ensure Service is Active: Starts the Docker daemon and enables it to launch automatically at system boot.
+
+🚀 Step 3: Executing the Playbook
+Run the following command from your workstation terminal inside the project directory:
+
+Bash
+ansible-playbook setup_lab.yml -K
+Command Flags Explained:
+ansible-playbook: The primary CLI tool used to run Ansible playbooks.
+
+setup_lab.yml: The target playbook file to execute.
+
+-K (--ask-become-pass): Prompts for the sudo password to execute administrative tasks on target nodes.
+
+🔍 Step 4: Verification & Validation Guide
+Verify configuration directly on target nodes (servera, serverb, or workernode):
+
+1. Set Password for appuser
+Bash
+sudo passwd appuser
+Purpose: Sets an authentication password so you can test interactive logins as appuser.
+
+2. Check User & Group Membership
+Bash
+id appuser
+Purpose: Confirms user creation. Look for groups=...sudo,docker in the output.
+
+3. Verify Application Directory Permissions
+Bash
+ls -ld /home/appuser/app_data
+Purpose: Confirms directory creation and ownership. Output should resemble: drwxr-xr-x ... appuser appuser ... /home/appuser/app_data.
+
+4. Check Docker Service Status
+Bash
+systemctl is-active docker
+Purpose: Confirms the background service is operational. Output must say active.
+
+5. Test Non-Root Docker Access
+Bash
+su - appuser
+docker ps
+Purpose: Switches context to appuser and verifies communication with the Docker daemon without using sudo.
+
+📦 Step 5: How to Save & Push this Project to GitHub (Step-by-Step)
+Follow these exact steps from your workstation terminal to push this entire project to GitHub:
+
+1. Initialize local Git repository
+Turn your project folder into a Git repository:
+
+Bash
+git init
+2. Stage all project files
+Add all created files (hosts, setup_lab.yml, ansible.cfg, README.md) to the staging area:
+
+Bash
+git add .
+3. Commit your changes
+Save the staged files into Git history with a message:
+
+Bash
+git commit -m "Initial commit: Ansible multi-node VM setup"
+4. Set the default branch to main
+Ensure your local branch matches GitHub's standard branch naming:
+
+Bash
+git branch -M main
+5. Link local project to GitHub
+Connect your local folder to your empty GitHub repository (replace YOUR_USERNAME and YOUR_REPO_NAME):
+
+Bash
+git remote add origin [https://github.com/YOUR_USERNAME/YOUR_REPO_NAME.git](https://github.com/YOUR_USERNAME/YOUR_REPO_NAME.git)
+6. Push files to GitHub
+Upload all local files to GitHub:
+
+Bash
+git push -u origin main
+🧠 Essential Commands Cheat Sheet
+Commands to reference when managing your lab, Git repository, and target nodes:
+
+1. Ansible Execution Commands
+Run playbook across all target nodes:
+
+Bash
+ansible-playbook setup_lab.yml -K
+Run playbook ONLY on a specific target node (e.g., serverb):
+
+Bash
+ansible-playbook setup_lab.yml -K -l serverb
+Ping all nodes in the inventory to test connectivity:
+
+Bash
+ansible web_servers -m ping
+2. Git & GitHub Version Control Workflow
+Use this sequence whenever you modify playbooks, inventories, or documentation:
+
+Check changed or untracked files:
+
+Bash
+git status
+Stage all changes:
+
+Bash
+git add .
+Commit changes with a descriptive summary:
+
+Bash
+git commit -m "Updated playbook and documentation"
+Push updates to GitHub:
+
+Bash
+git push
+3. Verification & Administrative Commands on Target Nodes
+Switch user context to appuser:
+
+Bash
+su - appuser
+Display user IDs and group memberships:
+
+Bash
+id appuser
+Check system service status:
+
+Bash
+systemctl status docker
+Inspect directory ownership and permissions:
+
+Bash
+ls -ld /home/appuser/app_data
